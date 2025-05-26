@@ -351,7 +351,7 @@ namespace GradientChecker {
 
                     bool current_param_ok = (rel_error < tolerance || abs_error < (tolerance * 1e-2));
 
-                    if (std::abs(an_grad) < 1e-9 && std::abs(num_grad) < 1e-7) {
+                    if (std::abs(an_grad) < 1e-9 && std::abs(num_grad) < 1e-7) { // If both are very small, it's okay
                         current_param_ok = true;
                     }
 

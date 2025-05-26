@@ -1,4 +1,5 @@
 // file: models.h
+// (Content is identical to the last version provided in the prompt, as it's stable for current debugging needs)
 #ifndef TENSOREIGEN_MODELS_H
 #define TENSOREIGEN_MODELS_H
 
@@ -45,6 +46,7 @@ public:
         Tensor current_x = input;
         std::string current_x_name = input_tensor_name;
 
+        // Add backward functions in FORWARD computational order (for reverse execution)
         for (size_t i = 0; i < layers_.size(); ++i) {
             Layer* layer = layers_[i].get();
             std::string layer_output_name = make_name(mlp_name_prefix_, "layer" + std::to_string(i) + "_out");
@@ -52,11 +54,12 @@ public:
                 layer_output_name = output_tensor_name;
             }
 
-            current_x = layer->forward(current_x, cache, layer_output_name );
+            current_x = layer->forward(current_x, cache, layer_output_name);
 
             std::string dL_dOutput_key_for_this_layer = layer_output_name;
             std::string dL_dInput_key_for_this_layer = current_x_name;
 
+            // Add backward function for THIS layer (forward order)
             cache.add_backward_fn([layer, dL_dOutput_key_for_this_layer, dL_dInput_key_for_this_layer, &cache]() {
                 if (!cache.has_gradient(dL_dOutput_key_for_this_layer)) {
                     std::cerr << "Warning: No gradient for " << dL_dOutput_key_for_this_layer
@@ -70,6 +73,7 @@ public:
                     cache.accumulate_gradient(dL_dInput_key_for_this_layer, dL_dInput_tensor);
                 }
             });
+
             current_x_name = layer_output_name;
         }
         return current_x;
@@ -179,8 +183,8 @@ public:
             Tensor h_new_for_this_layer = gru_layers_[i]->forward_step(grud_step_input, cache, h_new_names_this_step[i]);
 
             std::string dL_dH_new_key = h_new_names_this_step[i];
-            std::string dL_dH_prev_key = h_prev_names_for_grad[i];
-            std::string dL_dX_or_prev_gru_out_key = (i == 0) ? x_t_name_for_grad : h_new_names_this_step[i-1];
+            std::string dL_dH_prev_key = h_prev_names_for_grad[i]; // This is the name of h_prev_t for THIS layer i.
+            std::string dL_dX_or_prev_gru_out_key = (i == 0) ? x_t_name_for_grad : h_new_names_this_step[i-1]; // If i > 0, this is h_new from layer i-1.
             std::string dL_dDt_key = dt_t_name_for_grad;
 
             GRUDCell* current_gru_cell_ptr = gru_layers_[i].get();
@@ -198,10 +202,10 @@ public:
 
             current_input_to_gru_sequence = h_new_for_this_layer;
             current_input_name_for_grad_path = h_new_names_this_step[i];
-            hidden_states_io[i] = h_new_for_this_layer;
+            hidden_states_io[i] = h_new_for_this_layer; // Update hidden state for *next* step or next layer in this step
         }
 
-        Tensor final_rnn_output = current_input_to_gru_sequence;
+        Tensor final_rnn_output = current_input_to_gru_sequence; // This is h_new from the last GRU layer
         std::string final_rnn_output_name_for_grad = current_input_name_for_grad_path;
 
         if (output_layernorm_) {
@@ -248,14 +252,17 @@ public:
             loss_fn.backward(prediction, target_t, cache, prediction_output_name_for_grad_step);
         }
 
+        // After processing all layers for this step, update the names for h_prev_for_grad
+        // to reflect the *new* hidden state names (outputs of this step)
+        // This is for BPTT where the output of this step becomes the input for the next.
+        // For single step grad check, h_prev_names_for_this_step_grad_check holds the *input* names.
         for(int l=0; l<config_.num_layers; ++l) {
             h_prev_names_for_grad[l] = h_new_names_this_step[l];
         }
 
-        // Populate StepResult with names needed for gradient checking this specific step
         return {prediction, loss_val,
                 x_t_name_for_grad, dt_t_name_for_grad,
-                h_prev_names_for_this_step_grad_check, // Original h_prev names for *this* step
+                h_prev_names_for_this_step_grad_check,
                 prediction_output_name_for_grad_step};
     }
 
@@ -273,11 +280,14 @@ public:
             }
         }
         if(output_layernorm_ && !output_layernorm_->parameters().empty()) all_layers_flat.push_back(output_layernorm_.get());
-        if(output_dropout_ && !output_dropout_->parameters().empty()) {
-            all_layers_flat.push_back(output_dropout_.get());
+        if(output_dropout_ && !output_dropout_->parameters().empty()) { // Should only add if it has params. Dropout usually doesn't.
+            // all_layers_flat.push_back(output_dropout_.get()); // Typically dropout has no params.
         }
         if (readout_layer_ && !readout_layer_->parameters().empty()) all_layers_flat.push_back(readout_layer_.get());
 
+        // Remove duplicates that might arise if a GRUDCell itself is added AND its sublayers are also added
+        // (though the current logic adds GRUDCell if it has params, then its sublayers if they have params).
+        // Sorting and unique is a good safeguard.
         std::sort(all_layers_flat.begin(), all_layers_flat.end());
         all_layers_flat.erase(std::unique(all_layers_flat.begin(), all_layers_flat.end()), all_layers_flat.end());
         return all_layers_flat;
@@ -293,8 +303,8 @@ public:
             layer->set_training_mode(training);
         }
     }
-    const std::string& name() const { return model_name_prefix_; } // Added for gradient checker
-    const TemporalConfig& get_config() const { return config_; } // For grad checker
+    const std::string& name() const { return model_name_prefix_; }
+    const TemporalConfig& get_config() const { return config_; }
 };
 
 
